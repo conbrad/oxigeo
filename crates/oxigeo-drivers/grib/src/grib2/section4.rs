@@ -97,6 +97,31 @@ impl StatisticalProcessInfo {
 }
 
 /// A time value converted from its GRIB2 unit (WMO Code Table 4.4).
+///
+/// # Examples
+///
+/// ```
+/// use chrono::{Duration, NaiveDate};
+/// use oxigeo_grib::grib2::TimeOffset;
+///
+/// let reference = NaiveDate::from_ymd_opt(2024, 1, 31)
+///     .and_then(|d| d.and_hms_opt(12, 0, 0))
+///     .ok_or("invalid date")?;
+///
+/// // ECCC HRDPS writes a 6-hour forecast as 360 minutes (unit 0).
+/// let six_hours = TimeOffset::from_code_table_4_4(0, 360).ok_or("unknown unit")?;
+/// assert_eq!(six_hours, TimeOffset::Fixed(Duration::hours(6)));
+/// assert_eq!(six_hours.after(reference), Some(reference + Duration::hours(6)));
+///
+/// // A month (unit 3) follows the calendar: January 31 + 1 month is February 29 in 2024.
+/// let one_month = TimeOffset::from_code_table_4_4(3, 1).ok_or("unknown unit")?;
+/// let feb29 = NaiveDate::from_ymd_opt(2024, 2, 29).and_then(|d| d.and_hms_opt(12, 0, 0));
+/// assert_eq!(one_month.after(reference), feb29);
+///
+/// // 255 means the unit is missing, so there is no offset to apply.
+/// assert_eq!(TimeOffset::from_code_table_4_4(255, 6), None);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeOffset {
     /// A unit of fixed length: second, minute, hour, day, or 3, 6 or 12 hours.
