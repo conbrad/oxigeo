@@ -175,21 +175,15 @@ fn cell_segments(
             p0: top(),
             p1: right(),
         }],
-        5 => {
-            // Saddle point: disambiguate using center value
+        5 => vec![Segment {
+            p0: top(),
+            p1: bottom(),
+        }],
+        6 => {
+            // Saddle point (TR and BL above): disambiguate using center value
             let center = (tl + tr + bl + br) * 0.25;
             if center >= level {
-                vec![
-                    Segment {
-                        p0: top(),
-                        p1: right(),
-                    },
-                    Segment {
-                        p0: left(),
-                        p1: bottom(),
-                    },
-                ]
-            } else {
+                // The centre joins TR to BL, cutting off TL and BR.
                 vec![
                     Segment {
                         p0: top(),
@@ -200,12 +194,20 @@ fn cell_segments(
                         p1: right(),
                     },
                 ]
+            } else {
+                // TR and BL are separate peaks.
+                vec![
+                    Segment {
+                        p0: top(),
+                        p1: right(),
+                    },
+                    Segment {
+                        p0: left(),
+                        p1: bottom(),
+                    },
+                ]
             }
         }
-        6 => vec![Segment {
-            p0: top(),
-            p1: bottom(),
-        }],
         7 => vec![Segment {
             p0: top(),
             p1: left(),
@@ -214,25 +216,11 @@ fn cell_segments(
             p0: top(),
             p1: left(),
         }],
-        9 => vec![Segment {
-            p0: top(),
-            p1: bottom(),
-        }],
-        10 => {
-            // Saddle point: disambiguate using center value
+        9 => {
+            // Saddle point (TL and BR above): disambiguate using center value
             let center = (tl + tr + bl + br) * 0.25;
             if center >= level {
-                vec![
-                    Segment {
-                        p0: top(),
-                        p1: left(),
-                    },
-                    Segment {
-                        p0: bottom(),
-                        p1: right(),
-                    },
-                ]
-            } else {
+                // The centre joins TL to BR, cutting off TR and BL.
                 vec![
                     Segment {
                         p0: top(),
@@ -243,8 +231,24 @@ fn cell_segments(
                         p1: bottom(),
                     },
                 ]
+            } else {
+                // TL and BR are separate peaks.
+                vec![
+                    Segment {
+                        p0: top(),
+                        p1: left(),
+                    },
+                    Segment {
+                        p0: bottom(),
+                        p1: right(),
+                    },
+                ]
             }
         }
+        10 => vec![Segment {
+            p0: top(),
+            p1: bottom(),
+        }],
         11 => vec![Segment {
             p0: top(),
             p1: right(),
@@ -628,7 +632,7 @@ mod tests {
 
     #[test]
     fn test_contour_saddle_point() {
-        // Create a configuration that produces saddle points (cases 5/10).
+        // Create a configuration that produces saddle points (cases 6/9).
         // Diagonal pattern: high in TL and BR, low in TR and BL (or vice versa).
         // 3x3 grid:
         //  10   0   10
@@ -648,6 +652,88 @@ mod tests {
                 assert!(p.x.is_finite() && p.y.is_finite());
             }
         }
+    }
+
+    /// Each line of a single-cell grid as its two endpoints, ordered, so
+    /// segments can be compared regardless of direction.
+    fn cell_lines(data: &[f64], level: f64) -> Vec<[(f64, f64); 2]> {
+        let config = ContourConfig::new(level).expect("valid config");
+        let contours = generate_contours(data, 2, 2, &config).expect("should succeed");
+        let mut lines: Vec<[(f64, f64); 2]> = contours
+            .iter()
+            .filter(|c| c.level == level)
+            .map(|c| {
+                let a = c.points.first().expect("a point");
+                let b = c.points.last().expect("a point");
+                let (a, b) = ((a.x, a.y), (b.x, b.y));
+                if a <= b { [a, b] } else { [b, a] }
+            })
+            .collect();
+        lines.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        lines
+    }
+
+    #[test]
+    fn test_contour_east_west_slope_is_one_straight_line() {
+        // The same ramp as `test_contour_simple_slope`, rising west to east:
+        // the 15 contour is the straight line x = 1.5, from top to bottom.
+        let data = vec![
+            0.0, 10.0, 20.0, 30.0, 0.0, 10.0, 20.0, 30.0, 0.0, 10.0, 20.0, 30.0, 0.0, 10.0, 20.0,
+            30.0,
+        ];
+        let config = ContourConfig::new(15.0).expect("valid config");
+        let contours = generate_contours(&data, 4, 4, &config).expect("should succeed");
+        let at_15: Vec<_> = contours.iter().filter(|c| c.level == 15.0).collect();
+        assert_eq!(at_15.len(), 1, "one line: {at_15:?}");
+        let line = at_15[0];
+        assert!(
+            line.points.iter().all(|p| (p.x - 1.5).abs() < 1e-12),
+            "{line:?}"
+        );
+        let ys: Vec<f64> = line.points.iter().map(|p| p.y).collect();
+        let (min_y, max_y) = ys
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
+        assert_eq!((min_y, max_y), (0.0, 3.0));
+    }
+
+    #[test]
+    fn test_contour_vertical_cells_cross_top_to_bottom() {
+        // Cases 5 (right side above) and 10 (left side above).
+        assert_eq!(
+            cell_lines(&[0.0, 10.0, 0.0, 10.0], 5.0),
+            vec![[(0.5, 0.0), (0.5, 1.0)]]
+        );
+        assert_eq!(
+            cell_lines(&[10.0, 0.0, 10.0, 0.0], 5.0),
+            vec![[(0.5, 0.0), (0.5, 1.0)]]
+        );
+    }
+
+    #[test]
+    fn test_contour_saddle_cells() {
+        // Case 9: TL and BR above. With the centre (5) above the level, TL
+        // and BR join and the line cuts off TR and BL; below it, TL and BR
+        // are cut off instead.
+        let tl_br = [10.0, 0.0, 0.0, 10.0];
+        assert_eq!(
+            cell_lines(&tl_br, 4.0),
+            vec![[(0.0, 0.6), (0.4, 1.0)], [(0.6, 0.0), (1.0, 0.4)]]
+        );
+        assert_eq!(
+            cell_lines(&tl_br, 6.0),
+            vec![[(0.0, 0.4), (0.4, 0.0)], [(0.6, 1.0), (1.0, 0.6)]]
+        );
+        // Case 6: TR and BL above, the mirror image.
+        let tr_bl = [0.0, 10.0, 10.0, 0.0];
+        assert_eq!(
+            cell_lines(&tr_bl, 4.0),
+            vec![[(0.0, 0.4), (0.4, 0.0)], [(0.6, 1.0), (1.0, 0.6)]]
+        );
+        assert_eq!(
+            cell_lines(&tr_bl, 6.0),
+            vec![[(0.0, 0.6), (0.4, 1.0)], [(0.6, 0.0), (1.0, 0.4)]]
+        );
     }
 
     #[test]
