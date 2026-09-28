@@ -5,6 +5,11 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `oxigeo-algorithms`: `generate_contours` now traces cells split down the middle as one line, and saddle cells as two. `cell_segments` numbers the corners TL=8, TR=4, BL=2, BR=1, but its cases 5, 6, 9 and 10 followed a table with BL and BR swapped: cases 5 (TR and BR above the level) and 10 (TL and BL) were drawn as saddles, two diagonal segments, and the saddles 6 (TR and BL) and 9 (TL and BR) as one straight segment from top to bottom. Contours broke into diagonal dashes wherever the surface sloped along the x axis, and saddles were joined straight through. New tests check the exact geometry of both vertical cases, both saddles on either side of their centre value, and an x-axis ramp.
+
 ## [0.2.4] - 2026-08-18
 
 ### Added
