@@ -5,6 +5,11 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `oxigeo-grib`: fields packed with zero bits per value (constant fields) now decode for DRT 5.40 (JPEG2000), 5.41 and 5.42 as well as 5.0. Their Section 7 can be empty, and the JPEG2000 path tried to decode that as a codestream and failed with `Truncated message` — ECCC RDPS writes dew-point depression at 5 hPa this way. A constant field now decodes to `R / 10^D` at every point the bitmap marks present and NaN elsewhere; the simple-packing shortcut it replaces returned `R` unscaled at every point, ignoring both the decimal scale factor and the bitmap.
+
 ## [0.2.4] - 2026-08-18
 
 ### Added
