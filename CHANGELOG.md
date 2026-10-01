@@ -5,6 +5,11 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `oxigeo-grib`: DRT 5.3 (complex packing with spatial differencing) now decodes fields that use missing-value management. Missing points were folded into the differenced sequence as zero differences, so every value after the first missing point came out wrong — on GFS 0.25° output, sea-ice thickness (918k missing points) and geopotential height on the potential-vorticity surface decoded to values as large as -1e16. The differencing now runs over the present points only: the initial values belong to the first `order` present points, and missing points decode to the missing substitute, as in ecCodes and wgrib2. Regression tests cover order 1 and 2, including a missing first point.
+
 ## [0.2.4] - 2026-08-18
 
 ### Added
