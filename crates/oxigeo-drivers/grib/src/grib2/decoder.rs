@@ -655,7 +655,9 @@ fn resolve_missing_member(raw: u64, residual: u64, width: u32, mvm: u8) -> Optio
 /// 2. read each group's residuals at its own bit width and add the group
 ///    reference (a width-0 group yields a constant run);
 /// 3. apply the `(R + X * 2^E) / 10^D` scaling;
-/// 4. honour missing-value management by substituting the configured values.
+/// 4. honour missing-value management: missing points decode to NaN, the same
+///    as points a Section 6 bitmap masks out, so callers detect gaps one way
+///    whichever mechanism the producer used.
 ///
 /// `num_points` is the grid point count; the decoder trusts the group
 /// lengths but will not emit more than `num_points` values.
@@ -678,7 +680,7 @@ pub fn decode_complex_packing(
                 params.binary_scale_factor,
                 params.decimal_scale_factor,
             )),
-            None => out.push(missing_substitute_value(params)),
+            None => out.push(f32::NAN),
         }
     }
     Ok(out)
@@ -771,29 +773,10 @@ pub fn decode_complex_with_spatial_diff(
                 params.binary_scale_factor,
                 params.decimal_scale_factor,
             ),
-            None => missing_substitute_value(params),
+            None => f32::NAN,
         });
     }
     Ok(out)
-}
-
-/// Produces the scaled `f32` for a missing data point. The primary missing
-/// substitute (interpreted as an IEEE-754 bit pattern when present) is used;
-/// failing that, NaN is returned, which is the conventional GRIB sentinel.
-fn missing_substitute_value(params: &ComplexPackingParams) -> f32 {
-    if params.missing_value_management == 0 {
-        return f32::NAN;
-    }
-    // The substitute is documented as a value in the same representation as
-    // the field; the safest cross-implementation choice is NaN so callers can
-    // detect gaps. A non-NaN substitute encoded as an f32 bit pattern is
-    // surfaced when it is finite.
-    let candidate = f32::from_bits(params.primary_missing_substitute);
-    if candidate.is_finite() {
-        candidate
-    } else {
-        f32::NAN
-    }
 }
 
 #[cfg(test)]

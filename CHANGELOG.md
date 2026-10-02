@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `oxigeo-grib`: points marked missing by DRT 5.2/5.3 missing-value management now decode to NaN, the same as points a Section 6 bitmap masks out. They used to decode to the file's primary missing substitute whenever that was a finite number -- 9.999e20 on NCEP GFS output -- so a caller had to check for NaN *and* a producer-specific magic value, and one that only checked for NaN plotted 9.999e20 as data. **Behaviour change:** code that compared decoded values against the substitute must check `is_nan()` instead.
 - `oxigeo-grib`: DRT 5.3 (complex packing with spatial differencing) now decodes fields that use missing-value management. Missing points were folded into the differenced sequence as zero differences, so every value after the first missing point came out wrong — on GFS 0.25° output, sea-ice thickness (918k missing points) and geopotential height on the potential-vorticity surface decoded to values as large as -1e16. The differencing now runs over the present points only: the initial values belong to the first `order` present points, and missing points decode to the missing substitute, as in ecCodes and wgrib2. Regression tests cover order 1 and 2, including a missing first point.
 
 ## [0.2.4] - 2026-08-18

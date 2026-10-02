@@ -57,6 +57,17 @@ impl BitWriter {
     }
 }
 
+/// Asserts `got` equals `want` element-wise, with NaN matching NaN.
+fn assert_values(got: &[f32], want: &[f32]) {
+    assert_eq!(got.len(), want.len(), "value count: got {got:?}");
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        assert!(
+            (g.is_nan() && w.is_nan()) || g == w,
+            "value {i}: got {g}, want {w} (all: {got:?})"
+        );
+    }
+}
+
 /// Builds default complex-packing parameters; tests override what they need.
 fn base_params() -> ComplexPackingParams {
     ComplexPackingParams {
@@ -668,7 +679,7 @@ fn test_drt53_second_order_skips_missing_points() {
     //   Missing points are the all-ones pattern of the group width (2 bits
     //   -> 3), with missing_value_management = 1 (primary only).
     //   Residuals in point order: [0, 3, 0, 0, 3, 2, 0].
-    // Missing points decode to the primary missing substitute.
+    // Missing points decode to NaN, whatever the file's missing substitute.
     let mut params = base_params();
     params.bits_per_value = 8;
     params.num_groups = 1;
@@ -702,7 +713,7 @@ fn test_drt53_second_order_skips_missing_points() {
 
     let out = decode_complex_with_spatial_diff(&data, &params, &sd, 7)
         .expect("synthetic DRT 5.3 data with missing points decodes");
-    assert_eq!(out, vec![3.0, 9999.0, 5.0, 10.0, 9999.0, 20.0, 33.0]);
+    assert_values(&out, &[3.0, f32::NAN, 5.0, 10.0, f32::NAN, 20.0, 33.0]);
 }
 
 #[test]
@@ -747,5 +758,40 @@ fn test_drt53_first_order_missing_before_initial_value() {
 
     let out = decode_complex_with_spatial_diff(&data, &params, &sd, 5)
         .expect("synthetic DRT 5.3 data with a leading missing point decodes");
-    assert_eq!(out, vec![9999.0, 5.0, 9999.0, 8.0, 6.0]);
+    assert_values(&out, &[f32::NAN, 5.0, f32::NAN, 8.0, 6.0]);
+}
+
+#[test]
+fn test_drt52_missing_points_decode_to_nan() {
+    // DRT 5.2 with missing-value management: a member equal to the all-ones
+    // pattern of its group's width is missing, and decodes to NaN -- the same
+    // as a point a bitmap masks out -- not to the file's missing substitute.
+    //
+    // One group of 4 values at width 2 (missing marker 3), reference 0:
+    //   residuals [1, 3, 2, 0] -> [1, missing, 2, 0].
+    let mut params = base_params();
+    params.bits_per_value = 8;
+    params.num_groups = 1;
+    params.group_widths_reference = 0;
+    params.group_widths_bits = 8;
+    params.group_lengths_bits = 8;
+    params.group_last_length = 4;
+    params.missing_value_management = 1;
+    params.primary_missing_substitute = 9999.0f32.to_bits();
+
+    let mut w = BitWriter::new();
+    w.write_bits(0, 8); // reference
+    w.align();
+    w.write_bits(2, 8); // width
+    w.align();
+    w.write_bits(4, 8); // length
+    w.align();
+    for d in [1u64, 3, 2, 0] {
+        w.write_bits(d, 2);
+    }
+    let data = w.finish();
+
+    let out = decode_complex_packing(&data, &params, 4)
+        .expect("DRT 5.2 data with a missing point decodes");
+    assert_values(&out, &[1.0, f32::NAN, 2.0, 0.0]);
 }
