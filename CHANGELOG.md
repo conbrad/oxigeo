@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oxigeo-jpeg2000`: `Reversible53::forward_1d`/`forward_2d` now compute the standard 5/3 analysis (Annex F.4.8.2: odd samples first, then even, with whole-sample symmetric extension, columns before rows), matching the corrected inverse below. The previous transform was the mirror image of the standard one, so the coefficients it produces change.
 
 ### Fixed
-
 - `oxigeo-grib`: DRT 5.3 (complex packing with spatial differencing) now decodes fields that use missing-value management. Missing points were folded into the differenced sequence as zero differences, so every value after the first missing point came out wrong — on GFS 0.25° output, sea-ice thickness (918k missing points) and geopotential height on the potential-vorticity surface decoded to values as large as -1e16. The differencing now runs over the present points only: the initial values belong to the first `order` present points, and missing points decode to the missing substitute, as in ecCodes and wgrib2. Regression tests cover order 1 and 2, including a missing first point.
+- `oxigeo-grib`: fields packed with zero bits per value (constant fields) now decode for DRT 5.40 (JPEG2000), 5.41 and 5.42 as well as 5.0. Their Section 7 can be empty, and the JPEG2000 path tried to decode that as a codestream and failed with `Truncated message` — ECCC RDPS writes dew-point depression at 5 hPa this way. A constant field now decodes to `R / 10^D` at every point the bitmap marks present and NaN elsewhere; the simple-packing shortcut it replaces returned `R` unscaled at every point, ignoring both the decimal scale factor and the bitmap.
 
 
 ## [0.2.4] - 2026-08-18
