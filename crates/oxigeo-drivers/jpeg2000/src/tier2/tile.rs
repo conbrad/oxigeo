@@ -13,8 +13,11 @@
 //!
 //! - Progression orders **LRCP** and **RLCP** (single tile-part).
 //! - **Single quality layer** (`num_layers == 1`).
-//! - Maximum-size precincts (one precinct per resolution level), i.e. the
-//!   default `Scod` with custom precincts disabled (enforced at COD parse).
+//! - Default precincts (custom precinct sizes disabled, enforced at COD
+//!   parse): `2^15 x 2^15` in each resolution level, so a resolution wider or
+//!   taller than 32768 samples spans several precincts, each its own packet.
+//!   PCRL and CPRL streams with more than one precinct in a resolution are
+//!   rejected, since their packet order interleaves resolutions by position.
 //! - Reversible 5/3 wavelet.
 //!
 //! Multi-layer streams and the RPCL/PCRL/CPRL progression orders return a typed
@@ -29,6 +32,48 @@ use crate::tier2::layout::{
 use crate::tier2::packet::parse_precinct_packet;
 use crate::tier2::progression::ProgressionIterator;
 use crate::wavelet::Reversible53;
+
+/// log2 of the precinct size when custom precincts are disabled: `PPx = PPy
+/// = 15` (ISO 15444-1 Table A.21).
+const DEFAULT_PRECINCT_EXP: u32 = 15;
+
+/// Precincts across and down resolution `r` of a tile-component, with the
+/// tile-component origin at 0 (ISO 15444-1 Eq. B-16).
+fn precinct_grid(layout: &TileComponentLayout, r: usize) -> (usize, usize) {
+    let res = &layout.resolutions[r];
+    let size = 1usize << DEFAULT_PRECINCT_EXP;
+    (res.width.div_ceil(size), res.height.div_ceil(size))
+}
+
+/// The code-blocks of subband `sb` that fall in precinct `(px, py)` of
+/// resolution `r`: `(first block x, first block y, blocks across, blocks
+/// down)`. A precinct covers `2^15` samples of resolution 0's `LL` subband
+/// and `2^14` of each subband above it (ISO 15444-1 B.6), always a whole
+/// number of code-blocks.
+fn precinct_code_blocks(
+    sb: &crate::tier2::layout::SubbandLayout,
+    r: usize,
+    (px, py): (usize, usize),
+    (cbw, cbh): (usize, usize),
+) -> (usize, usize, usize, usize) {
+    let exp = if r == 0 {
+        DEFAULT_PRECINCT_EXP
+    } else {
+        DEFAULT_PRECINCT_EXP - 1
+    };
+    let span = |p: usize, cb: usize, n: usize| {
+        let first = ((p << exp) / cb).min(n);
+        let end = (((p + 1) << exp) / cb).min(n);
+        (first, end - first)
+    };
+    let (bx0, nx) = span(px, cbw, sb.cblk_nx);
+    let (by0, ny) = span(py, cbh, sb.cblk_ny);
+    if nx == 0 || ny == 0 {
+        (bx0, by0, 0, 0)
+    } else {
+        (bx0, by0, nx, ny)
+    }
+}
 
 /// Per-component decode inputs.
 #[derive(Debug, Clone, Copy)]
@@ -153,8 +198,48 @@ fn decode_packets(
 ) -> Result<()> {
     let num_components = layouts.len();
     let num_resolutions = params.num_levels as usize + 1;
-    // Maximum precinct size => exactly one precinct per resolution level.
-    let num_precincts = vec![1u32; num_resolutions];
+
+    // The progression iterator takes one precinct count per resolution; use
+    // the largest over the components and skip a component's packets past
+    // its own count.
+    let mut grids_differ = false;
+    let num_precincts = (0..num_resolutions)
+        .map(|r| {
+            let counts: Vec<usize> = layouts
+                .iter()
+                .filter(|layout| r < layout.num_resolutions())
+                .map(|layout| {
+                    let (nx, ny) = precinct_grid(layout, r);
+                    nx * ny
+                })
+                .collect();
+            let max = counts.iter().copied().max().unwrap_or(0);
+            grids_differ |= counts.iter().any(|&n| n != max);
+            u32::try_from(max).map_err(|_| {
+                Jpeg2000Error::UnsupportedFeature(format!(
+                    "resolution {r} has {max} precincts, more than this decoder can index"
+                ))
+            })
+        })
+        .collect::<Result<Vec<u32>>>()?;
+    // In the position-driven orders, packets of different resolutions (and,
+    // for RPCL, components) interleave by precinct position once a resolution
+    // has more than one precinct, which a per-resolution precinct index cannot
+    // reproduce. Reject rather than mis-slice.
+    if num_precincts.iter().any(|&n| n > 1) {
+        let unsupported = match params.progression {
+            ProgressionOrder::Pcrl | ProgressionOrder::Cprl => true,
+            ProgressionOrder::Rpcl => grids_differ,
+            ProgressionOrder::Lrcp | ProgressionOrder::Rlcp => false,
+        };
+        if unsupported {
+            return Err(Jpeg2000Error::UnsupportedFeature(format!(
+                "{:?} progression with more than one precinct per resolution \
+                 (an image wider or taller than 32768 samples) is not supported",
+                params.progression
+            )));
+        }
+    }
 
     let iterator = ProgressionIterator::new(
         params.progression,
@@ -187,11 +272,22 @@ fn decode_packets(
             pos = (pos + 6).min(tile_data.len());
         }
 
+        let (npx, npy) = precinct_grid(&layouts[c], r);
+        let p = address.precinct as usize;
+        if p >= npx * npy {
+            // This component has fewer precincts here than another one.
+            continue;
+        }
         let res_layout = &layouts[c].resolutions[r];
-        let grids: Vec<(u32, u32)> = res_layout
+        // Each subband's code-blocks inside this precinct.
+        let blocks: Vec<(usize, usize, usize, usize)> = res_layout
             .subbands
             .iter()
-            .map(|sb| (sb.cblk_nx as u32, sb.cblk_ny as u32))
+            .map(|sb| precinct_code_blocks(sb, r, (p % npx, p / npx), (params.cbw, params.cbh)))
+            .collect();
+        let grids: Vec<(u32, u32)> = blocks
+            .iter()
+            .map(|&(_, _, nx, ny)| (nx as u32, ny as u32))
             .collect();
 
         let packet_slice = &tile_data[pos..];
@@ -219,10 +315,11 @@ fn decode_packets(
                 .map(|q| q.subband_exponent(sb.exponent_index))
                 .unwrap_or(0);
 
-            for by in 0..sb.cblk_ny {
-                for bx in 0..sb.cblk_nx {
-                    let idx = by * sb.cblk_nx + bx;
-                    let Some(contrib) = sub_contrib.get(idx) else {
+            let (bx0, by0, pnx, pny) = blocks[sbi];
+            for lby in 0..pny {
+                for lbx in 0..pnx {
+                    let (bx, by) = (bx0 + lbx, by0 + lby);
+                    let Some(contrib) = sub_contrib.get(lby * pnx + lbx) else {
                         continue;
                     };
                     if !contrib.included || contrib.data_len == 0 {
@@ -556,6 +653,36 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{progression:?} must decode, got {e:?}"));
             assert_eq!(out.len(), 1);
             assert_eq!(out[0], vec![0i32; 16], "{progression:?}");
+        }
+    }
+
+    #[test]
+    fn test_position_progression_with_several_precincts_rejected() {
+        // 40000 samples wide: resolution 5 spans two default precincts, and
+        // PCRL/CPRL packet order then depends on precinct positions.
+        for progression in [ProgressionOrder::Pcrl, ProgressionOrder::Cprl] {
+            let comps = [TileComponentInput {
+                comp_w: 40_000,
+                comp_h: 1,
+                precision: 8,
+            }];
+            let params = TileDecodeParams {
+                components: &comps,
+                num_levels: 5,
+                cbw: 64,
+                cbh: 64,
+                progression,
+                num_layers: 1,
+                guard_bits: 2,
+                quantization: None,
+                has_sop: false,
+                has_eph: false,
+            };
+            let err = decode_tile_components(&[0x00], &params);
+            assert!(
+                matches!(err, Err(Jpeg2000Error::UnsupportedFeature(_))),
+                "{progression:?} must be rejected, got {err:?}"
+            );
         }
     }
 

@@ -16,10 +16,10 @@
 //!   decomposition level `nb = N - r + 1`.
 //!
 //! Each subband is partitioned into a grid of code-blocks of nominal size
-//! `cbw × cbh`.  With the (mandatory here) maximum precinct size, there is
-//! exactly one precinct per resolution level that spans the whole resolution,
-//! so the code-block grid of a subband is simply `ceil(nw / cbw)` by
-//! `ceil(nh / cbh)`.
+//! `cbw × cbh`, simply `ceil(nw / cbw)` by `ceil(nh / cbh)`.  The default
+//! precincts (the only ones supported) are a whole number of code-blocks, so
+//! they group this grid without changing it; Tier-2 (`tile.rs`) works out
+//! which code-blocks each precinct's packet carries.
 
 use crate::tier1::SubbandType;
 
