@@ -648,3 +648,104 @@ fn test_drt53_second_order_spatial_diff() {
         .expect("synthetic DRT 5.3 data decodes");
     assert_eq!(out, vec![3.0, 5.0, 10.0, 20.0, 33.0]);
 }
+
+// ===========================================================================
+// 13. DRT 5.3 with missing-value management: missing points are skipped by
+//     the differencing, not folded in as zero differences.
+// ===========================================================================
+
+#[test]
+fn test_drt53_second_order_skips_missing_points() {
+    // GFS packs fields that are missing over part of the globe (sea-ice
+    // thickness, heights on the potential-vorticity surface) as DRT 5.3
+    // with missing-value management, and no bitmap. The differenced
+    // sequence runs over the *present* points only.
+    //
+    // Same series as test 12, v = [3, 5, 10, 20, 33], with missing points
+    // interleaved: points = [3, M, 5, 10, M, 20, 33].
+    //   Stored differences of the present points (from test 12):
+    //     [0, 0, 0, 2, 0], overall minimum 3, initials 3 and 5.
+    //   Missing points are the all-ones pattern of the group width (2 bits
+    //   -> 3), with missing_value_management = 1 (primary only).
+    //   Residuals in point order: [0, 3, 0, 0, 3, 2, 0].
+    // Missing points decode to the primary missing substitute.
+    let mut params = base_params();
+    params.bits_per_value = 8;
+    params.num_groups = 1;
+    params.group_widths_reference = 0;
+    params.group_widths_bits = 8;
+    params.group_lengths_bits = 8;
+    params.group_last_length = 7;
+    params.missing_value_management = 1;
+    params.primary_missing_substitute = 9999.0f32.to_bits();
+
+    let sd = SpatialDiffParams {
+        order: 2,
+        extra_octets: 1,
+    };
+
+    let mut w = BitWriter::new();
+    w.write_bits(3, 8); // v0
+    w.write_bits(5, 8); // v1
+    w.write_bits(3, 8); // overall minimum
+    w.align();
+    w.write_bits(0, 8); // reference
+    w.align();
+    w.write_bits(2, 8); // width
+    w.align();
+    w.write_bits(7, 8); // length
+    w.align();
+    for d in [0u64, 3, 0, 0, 3, 2, 0] {
+        w.write_bits(d, 2);
+    }
+    let data = w.finish();
+
+    let out = decode_complex_with_spatial_diff(&data, &params, &sd, 7)
+        .expect("synthetic DRT 5.3 data with missing points decodes");
+    assert_eq!(out, vec![3.0, 9999.0, 5.0, 10.0, 9999.0, 20.0, 33.0]);
+}
+
+#[test]
+fn test_drt53_first_order_missing_before_initial_value() {
+    // A missing first point: the initial value belongs to the first
+    // *present* point, not to point 0.
+    //
+    // points = [M, 5, M, 8, 6]; present series 5, 8, 6.
+    //   deltas 3, -2; overall minimum -2; stored = delta - min = 5, 0.
+    //   The initial (5) occupies the first present slot, which stores 0.
+    //   Width 3 -> missing marker 7 (all ones).
+    //   Residuals in point order: [7, 0, 7, 5, 0].
+    let mut params = base_params();
+    params.bits_per_value = 8;
+    params.num_groups = 1;
+    params.group_widths_reference = 0;
+    params.group_widths_bits = 8;
+    params.group_lengths_bits = 8;
+    params.group_last_length = 5;
+    params.missing_value_management = 1;
+    params.primary_missing_substitute = 9999.0f32.to_bits();
+
+    let sd = SpatialDiffParams {
+        order: 1,
+        extra_octets: 2,
+    };
+
+    let mut w = BitWriter::new();
+    w.write_bits(5, 16); // initial
+    w.write_bits((1u64 << 15) | 2, 16); // overall minimum -2
+    w.align();
+    w.write_bits(0, 8); // reference
+    w.align();
+    w.write_bits(3, 8); // width
+    w.align();
+    w.write_bits(5, 8); // length
+    w.align();
+    for d in [7u64, 0, 7, 5, 0] {
+        w.write_bits(d, 3);
+    }
+    let data = w.finish();
+
+    let out = decode_complex_with_spatial_diff(&data, &params, &sd, 5)
+        .expect("synthetic DRT 5.3 data with a leading missing point decodes");
+    assert_eq!(out, vec![9999.0, 5.0, 9999.0, 8.0, 6.0]);
+}
