@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `oxigeo-grib`: `TimeOffset` converts a GRIB2 time value from its unit (WMO Code Table 4.4) into either a fixed `chrono::Duration` (second to 12 hours) or a number of months (month to century), and `TimeOffset::after` applies it to a date with calendar arithmetic for the month-based units. `ProductDefinitionSection::forecast_offset()` returns the forecast time as a `TimeOffset`, and `Grib2Message::forecast_offset()` as a `chrono::Duration` for the fixed-length units.
+
 ### Changed
 - `oxigeo-jpeg2000`: `color::level_shift` now adds the `2^(precision - 1)` DC offset for unsigned components, as ISO/IEC 15444-1 Annex G.1.2 requires; it previously added it only for signed ones, so unsigned images came out shifted down by half their range. The 8-bit output of `Jpeg2000Reader::decode_rgb`, `decode_rgba`, `decode_tile` and `decode_region_from_tiles` for unsigned images changes accordingly: an all-zero-coefficient 8-bit stream now decodes to 128, not 0.
 - `oxigeo-jpeg2000`: `Reversible53::forward_1d`/`forward_2d` now compute the standard 5/3 analysis (Annex F.4.8.2: odd samples first, then even, with whole-sample symmetric extension, columns before rows), matching the corrected inverse below. The previous transform was the mirror image of the standard one, so the coefficients it produces change.
@@ -23,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Code-block decoding also no longer stops when the MQ decoder reaches the end of its bytes, since standard streams continue on the implied `0xFF` fill (C.3.4). New regression tests decode OpenJPEG 2.5.4 codestreams (8, 11 and 16-bit, 0 to 5 wavelet levels, odd sizes) and check every sample.
 - `oxigeo-grib`: GRIB2 DRT 5.40 (JPEG2000-packed) fields now decode to the right values ([#31](https://github.com/cool-japan/oxigeo/issues/31)). Besides the decoder fixes above, `decode_jpeg2000_values` never undid the DC level shift, so every value was low by `2^(nbits - 1) * 2^E / 10^D`. ECCC RDPS and HRDPS fields now match ecCodes to float32 precision.
+- `oxigeo-grib`: GRIB2 forecast times are now read in their own unit instead of always as hours ([#33](https://github.com/cool-japan/oxigeo/issues/33)). `Grib2Message::forecast_offset_hours()` returned the raw `forecast_time` and `valid_time()` added it as hours, ignoring the unit already parsed into `time_range_unit`, so ECCC HRDPS fields (which give forecast times in minutes) reported a 6-hour forecast as +360 h with a valid time 15 days late. `forecast_offset_hours()` now converts to whole hours (rounding down; use `forecast_offset()` for minutes and seconds, and it falls back to the raw value only if the unit is missing or undefined), and `valid_time()` returns `None` when the unit is missing or undefined rather than guessing hours. `GribRecord` inherits both fixes.
+
 
 ## [0.2.4] - 2026-08-18
 
