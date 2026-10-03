@@ -330,6 +330,36 @@ mod tests {
         section5_payload: &[u8],
         section7_payload: &[u8],
     ) -> Vec<u8> {
+        build_message(
+            num_points,
+            time_unit,
+            forecast_time,
+            section5_payload,
+            None,
+            section7_payload,
+        )
+    }
+
+    /// [`message_with_drt`] with an optional Section 6 bitmap (MSB-first,
+    /// one bit per grid point).
+    fn message_with_drt_and_bitmap(
+        num_points: u32,
+        section5_payload: &[u8],
+        bitmap: Option<&[u8]>,
+        section7_payload: &[u8],
+    ) -> Vec<u8> {
+        build_message(num_points, 1, 0, section5_payload, bitmap, section7_payload)
+    }
+
+    /// The message builder behind the helpers above.
+    fn build_message(
+        num_points: u32,
+        time_unit: u8,
+        forecast_time: u32,
+        section5_payload: &[u8],
+        bitmap: Option<&[u8]>,
+        section7_payload: &[u8],
+    ) -> Vec<u8> {
         let mut data = Vec::new();
 
         // Section 1: Identification.
@@ -372,6 +402,13 @@ mod tests {
 
         // Section 5: caller-supplied.
         data.extend_from_slice(&framed_section(5, section5_payload));
+
+        // Section 6: bitmap indicator 0 (a bitmap follows) when one is given.
+        if let Some(bits) = bitmap {
+            let mut s6 = vec![0u8];
+            s6.extend_from_slice(bits);
+            data.extend_from_slice(&framed_section(6, &s6));
+        }
 
         // Section 7: caller-supplied packed/encoded data.
         data.extend_from_slice(&framed_section(7, section7_payload));
@@ -501,6 +538,49 @@ mod tests {
             result.is_err(),
             "invalid JPEG2000 codestream must error, not silently mis-unpack"
         );
+    }
+
+    /// DRT 5.40 with zero bits per value is a constant field whose Section 7
+    /// carries no codestream at all (ECCC RDPS writes dew-point depression
+    /// at 5 hPa this way). It decodes to the reference value everywhere,
+    /// with or without the `jpeg2000` feature.
+    #[test]
+    fn test_decode_jpeg2000_constant_field_has_no_codestream() {
+        let mut s5 = Vec::new();
+        s5.extend_from_slice(&4u32.to_be_bytes()); // num_data_points
+        s5.extend_from_slice(&40u16.to_be_bytes()); // template 5.40
+        s5.extend_from_slice(&30.0f32.to_be_bytes()); // reference value
+        s5.extend_from_slice(&0u16.to_be_bytes()); // binary scale
+        s5.extend_from_slice(&0u16.to_be_bytes()); // decimal scale
+        s5.push(0); // bits per value: constant field
+
+        let msg = message_with_drt(4, &s5, &[]);
+        let parsed = Grib2Message::from_bytes(&msg, 0).expect("parse constant 5.40 message");
+        assert_eq!(parsed.decode_data().expect("decode"), vec![30.0; 4]);
+    }
+
+    /// A constant field is `R / 10^D` at every point the bitmap marks
+    /// present, and NaN elsewhere -- the same scaling and bitmap handling as
+    /// any other simple-packed field.
+    #[test]
+    fn test_decode_constant_field_applies_decimal_scale_and_bitmap() {
+        let mut s5 = Vec::new();
+        s5.extend_from_slice(&2u32.to_be_bytes()); // num_data_points (present)
+        s5.extend_from_slice(&0u16.to_be_bytes()); // template 5.0
+        s5.extend_from_slice(&1234.0f32.to_be_bytes()); // reference value
+        s5.extend_from_slice(&0u16.to_be_bytes()); // binary scale
+        s5.extend_from_slice(&1u16.to_be_bytes()); // decimal scale: D = 1
+        s5.push(0); // bits per value: constant field
+        s5.push(0); // type of original field values
+
+        let msg = message_with_drt_and_bitmap(4, &s5, Some(&[0b1010_0000]), &[]);
+        let parsed = Grib2Message::from_bytes(&msg, 0).expect("parse constant 5.0 message");
+        let decoded = parsed.decode_data().expect("decode");
+        assert_eq!(decoded.len(), 4);
+        assert!((decoded[0] - 123.4).abs() < 1e-4, "got {}", decoded[0]);
+        assert!(decoded[1].is_nan());
+        assert!((decoded[2] - 123.4).abs() < 1e-4, "got {}", decoded[2]);
+        assert!(decoded[3].is_nan());
     }
 
     /// DRT 5.41 (PNG) is not implemented and must fail with a typed error

@@ -53,6 +53,13 @@ impl<'a> Grib2Decoder<'a> {
             return Ok(self.apply_bitmap(raw, num_points));
         }
 
+        // Zero bits per value means a constant field (simple packing and the
+        // compressed packings alike), and Section 7 may then hold no data at
+        // all: there is no codestream to decode.
+        if dr.bits_per_value == 0 && matches!(dr.template_number, 0 | 40 | 41 | 42) {
+            return self.decode_constant_field(num_points);
+        }
+
         // Remaining templates are dispatched explicitly on the template number
         // so that a template the crate cannot actually decode (e.g. a
         // JPEG2000/PNG/CCSDS payload) never silently falls through to the
@@ -77,15 +84,31 @@ impl<'a> Grib2Decoder<'a> {
         }
     }
 
+    /// Decodes a field packed with zero bits per value. Every packed value
+    /// `X` is then 0, so each present point is `R / 10^D` (the
+    /// `Y * 10^D = R + X * 2^E` packing formula with `X = 0`); points the
+    /// bitmap marks absent are NaN, as for any other field.
+    fn decode_constant_field(&self, num_points: usize) -> Result<Vec<f32>> {
+        if num_points > MAX_DECODED_ELEMENTS {
+            return Err(GribError::InvalidDataRepresentation(format!(
+                "constant field: {num_points} grid points exceeds the maximum \
+                 supported ({MAX_DECODED_ELEMENTS})"
+            )));
+        }
+        let dr = &self.message.data_representation;
+        let value = dr.reference_value / dr.decimal_divisor();
+        let present = match &self.message.bitmap {
+            Some(bitmap) => bitmap.iter().take(num_points).filter(|&&p| p).count(),
+            None => num_points,
+        };
+        Ok(self.apply_bitmap(vec![value; present], num_points))
+    }
+
     /// Decodes DRT 5.0 simple-packed Section 7 data (fixed-width scaled
     /// integers with the `(R + X * 2^E) / 10^D` formula).
     fn decode_simple_packing(&self) -> Result<Vec<f32>> {
         let dr = &self.message.data_representation;
         let num_points = self.message.num_points();
-
-        if dr.bits_per_value == 0 {
-            return Ok(vec![dr.reference_value; num_points]);
-        }
 
         let packed_values = self.unpack_bits(
             &self.message.data_section.packed_data,
