@@ -74,6 +74,53 @@ mod tests {
         });
     }
 
+    // A one-pixel-tall (or one-pixel-wide) image leaves every vertical (or
+    // horizontal) high-pass subband empty. GRIB2 DRT 5.40 fields with a
+    // bitmap are packed this way -- ECCC RDPS writes CAPE as a single
+    // 839410x1 row -- so these mirror that shape.
+
+    #[test]
+    fn decodes_single_row_8bit_five_levels() {
+        let decoded = decode_unsigned(include_bytes!("../../tests/data/row_1000x1_u8_l5.j2k"), 8);
+        assert_matches("row_1000x1_u8_l5", &decoded, 1000, 1, |x, _| {
+            (x * 11 + x * x * 3) % 256
+        });
+    }
+
+    #[test]
+    fn decodes_single_row_16bit_five_levels() {
+        let decoded = decode_unsigned(include_bytes!("../../tests/data/row_777x1_u16_l5.j2k"), 16);
+        assert_matches("row_777x1_u16_l5", &decoded, 777, 1, |x, _| {
+            (x * 2917 + x * x * 31) % 65536
+        });
+    }
+
+    #[test]
+    fn decodes_single_row_24bit_five_levels() {
+        let decoded = decode_unsigned(include_bytes!("../../tests/data/row_500x1_u24_l5.j2k"), 24);
+        assert_matches("row_500x1_u24_l5", &decoded, 500, 1, |x, _| {
+            ((i64::from(x) * 104_729 + i64::from(x) * i64::from(x) * 7919) % (1 << 24)) as i32
+        });
+    }
+
+    #[test]
+    fn decodes_a_row_wider_than_one_precinct() {
+        // 70000 px wide: at the default 2^15 precinct size the two finest
+        // resolutions are split into several precincts across the row.
+        let decoded = decode_unsigned(include_bytes!("../../tests/data/row_70000x1_u8_l5.j2k"), 8);
+        assert_matches("row_70000x1_u8_l5", &decoded, 70000, 1, |x, _| {
+            ((x / 37) * 3 + x % 5) % 256
+        });
+    }
+
+    #[test]
+    fn decodes_single_column_8bit_three_levels() {
+        let decoded = decode_unsigned(include_bytes!("../../tests/data/col_1x300_u8_l3.j2k"), 8);
+        assert_matches("col_1x300_u8_l3", &decoded, 1, 300, |_, y| {
+            (y * 29 + y * y * 5) % 256
+        });
+    }
+
     #[test]
     fn decodes_rgb_with_reversible_colour_transform() {
         let mut reader = Jpeg2000Reader::new(Cursor::new(
