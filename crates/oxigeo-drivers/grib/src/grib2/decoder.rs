@@ -726,61 +726,53 @@ pub fn decode_complex_with_spatial_diff(
     let overall_minimum = reader.read_sign_magnitude(descriptor_bits)?;
     reader.align_to_byte();
 
-    // Step 2: group-decode the differences. Missing-value management is not
-    // combined with spatial differencing in practice, but the same group
-    // machinery is reused; a missing slot is treated as a zero difference.
+    // Step 2: group-decode the differences. A slot is `None` when
+    // missing-value management marks it missing; GFS uses that together
+    // with spatial differencing (e.g. sea-ice thickness, which is missing
+    // over open water).
     let (descriptors, total_points) = read_group_descriptors(&mut reader, params)?;
     let raw_values = read_group_values(&mut reader, &descriptors, params)?;
 
-    // Step 3: add the overall minimum back to every decoded difference.
-    let mut diffs: Vec<i64> = Vec::with_capacity(raw_values.len());
-    for slot in &raw_values {
-        match slot {
-            Some(x) => diffs.push(*x + overall_minimum),
-            None => diffs.push(overall_minimum),
-        }
-    }
-
-    // Step 4: invert the spatial differencing in place. The first `order`
-    // values are the stored initial values, not differences.
+    // Steps 3-4: add the overall minimum back and invert the differencing.
+    // Missing slots are not part of the differenced sequence: the first
+    // `order` *present* values are the stored initial values, and every
+    // later present value continues from the previous present ones (as
+    // ecCodes and wgrib2 decode it). Folding a missing slot in as a zero
+    // difference would corrupt every value after it.
     let count = total_points.min(num_points);
-    let mut values: Vec<i64> = Vec::with_capacity(count);
-    match sd.order {
-        1 => {
-            for (i, slot) in diffs.iter().enumerate().take(count) {
-                if i == 0 {
-                    values.push(initials[0]);
-                } else {
-                    let prev = values[i - 1];
-                    values.push(slot + prev);
-                }
-            }
-        }
-        _ => {
-            // order == 2
-            for (i, slot) in diffs.iter().enumerate().take(count) {
-                match i {
-                    0 => values.push(initials[0]),
-                    1 => values.push(initials[1]),
-                    _ => {
-                        let v1 = values[i - 1];
-                        let v2 = values[i - 2];
-                        values.push(slot + 2 * v1 - v2);
-                    }
-                }
-            }
-        }
+    let mut values: Vec<Option<i64>> = Vec::with_capacity(count);
+    let mut present = 0usize;
+    let (mut last, mut penultimate) = (0i64, 0i64);
+    for slot in raw_values.iter().take(count) {
+        let Some(diff) = slot else {
+            values.push(None);
+            continue;
+        };
+        let value = if present < sd.order as usize {
+            initials[present]
+        } else if sd.order == 1 {
+            diff + overall_minimum + last
+        } else {
+            diff + overall_minimum + 2 * last - penultimate
+        };
+        penultimate = last;
+        last = value;
+        present += 1;
+        values.push(Some(value));
     }
 
     // Step 5: apply the scaling formula.
     let mut out = Vec::with_capacity(values.len());
     for v in values {
-        out.push(apply_scale(
-            v as f64,
-            params.reference_value,
-            params.binary_scale_factor,
-            params.decimal_scale_factor,
-        ));
+        out.push(match v {
+            Some(v) => apply_scale(
+                v as f64,
+                params.reference_value,
+                params.binary_scale_factor,
+                params.decimal_scale_factor,
+            ),
+            None => missing_substitute_value(params),
+        });
     }
     Ok(out)
 }
