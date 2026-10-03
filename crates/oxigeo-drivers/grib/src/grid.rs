@@ -125,39 +125,100 @@ impl RotatedLatLonGrid {
         self.base.num_points()
     }
 
+    /// The rotation between this grid's rotated frame and geographic
+    /// coordinates.
+    pub fn rotation(&self) -> PoleRotation {
+        PoleRotation::new(self.lat_south_pole, self.lon_south_pole, self.angle)
+    }
+
     /// Returns the true geographic `(latitude, longitude)` in degrees of grid
     /// point `(i, j)`.
     ///
     /// The base grid supplies the point's coordinates in the *rotated* system;
-    /// this method un-rotates them back to geographic coordinates given the
-    /// rotated south pole `(lat_south_pole, lon_south_pole)` and the angle of
-    /// rotation about the new polar axis (WMO GDT 3.1). The standard
-    /// Z-Y'-Z'' spherical rotation is used; for the common `angle == 0` case
-    /// this reduces to the classic two-angle un-rotation used by eccodes.
+    /// this method un-rotates them back to geographic coordinates (see
+    /// [`PoleRotation::to_geographic`]).
     pub fn coordinates(&self, i: u32, j: u32) -> Result<(f64, f64)> {
-        let (rlat_deg, rlon_deg) = self.base.coordinates(i, j)?;
+        let (rlat, rlon) = self.base.coordinates(i, j)?;
+        Ok(self.rotation().to_geographic(rlat, rlon))
+    }
+
+    /// Returns the rotated `(latitude, longitude)` in degrees of the
+    /// geographic point `(lat, lon)`: the inverse of [`Self::coordinates`]
+    /// before the base grid's indexing. Use [`Self::rotation`] to convert many
+    /// points.
+    pub fn rotated_coordinates(&self, lat: f64, lon: f64) -> (f64, f64) {
+        self.rotation().to_rotated(lat, lon)
+    }
+}
+
+/// The rotation of a rotated latitude/longitude grid (WMO GDT 3.1), in both
+/// directions.
+///
+/// Built from the rotated south pole `(lat_south_pole, lon_south_pole)` and
+/// the angle of rotation about the new polar axis, all in degrees. The
+/// standard Z-Y'-Z'' spherical rotation is used; for the common `angle == 0`
+/// case this reduces to the classic two-angle un-rotation used by eccodes.
+/// The rotation matrix is computed once, so converting many points costs no
+/// more trigonometry than the points themselves need.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoleRotation {
+    /// Rotated frame to geographic frame; its transpose is the inverse.
+    matrix: [[f64; 3]; 3],
+    angle: f64,
+}
+
+impl PoleRotation {
+    /// Creates the rotation for a rotated south pole at `(lat_south_pole,
+    /// lon_south_pole)` and an angle of rotation `angle`, in degrees.
+    pub fn new(lat_south_pole: f64, lon_south_pole: f64, angle: f64) -> Self {
+        let theta = -(90.0 + lat_south_pole).to_radians();
+        let phi = -lon_south_pole.to_radians();
+        let (sin_t, cos_t) = (theta.sin(), theta.cos());
+        let (sin_p, cos_p) = (phi.sin(), phi.cos());
+        // Inverse rotation (Y then Z) into the geographic frame.
+        Self {
+            matrix: [
+                [cos_t * cos_p, sin_p, sin_t * cos_p],
+                [-cos_t * sin_p, cos_p, -(sin_t * sin_p)],
+                [-sin_t, 0.0, cos_t],
+            ],
+            angle,
+        }
+    }
+
+    /// Converts rotated `(latitude, longitude)` to geographic `(latitude,
+    /// longitude)`, in degrees, longitude in `[-180, 180]`.
+    pub fn to_geographic(&self, rlat: f64, rlon: f64) -> (f64, f64) {
         // Angle of rotation acts about the rotated polar axis: apply it as a
         // longitude offset in the rotated frame before un-rotating.
-        let rlon = (rlon_deg - self.angle).to_radians();
-        let rlat = rlat_deg.to_radians();
-
-        let theta = -(90.0 + self.lat_south_pole).to_radians();
-        let phi = -self.lon_south_pole.to_radians();
-
-        // Rotated-frame unit vector.
-        let x = rlon.cos() * rlat.cos();
-        let y = rlon.sin() * rlat.cos();
-        let z = rlat.sin();
-
-        // Inverse rotation (Y then Z) into the geographic frame.
-        let x2 = theta.cos() * phi.cos() * x + phi.sin() * y + theta.sin() * phi.cos() * z;
-        let y2 = -theta.cos() * phi.sin() * x + phi.cos() * y - theta.sin() * phi.sin() * z;
-        let z2 = -theta.sin() * x + theta.cos() * z;
-
-        let lat = z2.clamp(-1.0, 1.0).asin().to_degrees();
-        let lon = normalize_longitude(y2.atan2(x2).to_degrees());
-        Ok((lat, lon))
+        let v = unit_vector(rlat, rlon - self.angle);
+        let m = &self.matrix;
+        from_unit_vector(m.map(|row| row[0] * v[0] + row[1] * v[1] + row[2] * v[2]))
     }
+
+    /// Converts geographic `(latitude, longitude)` to rotated `(latitude,
+    /// longitude)`, in degrees, longitude in `[-180, 180]`: the inverse of
+    /// [`Self::to_geographic`].
+    pub fn to_rotated(&self, lat: f64, lon: f64) -> (f64, f64) {
+        let v = unit_vector(lat, lon);
+        let m = &self.matrix;
+        let (rlat, rlon) =
+            from_unit_vector([0, 1, 2].map(|k| m[0][k] * v[0] + m[1][k] * v[1] + m[2][k] * v[2]));
+        (rlat, normalize_longitude(rlon + self.angle))
+    }
+}
+
+/// `(lat, lon)` in degrees -> unit vector.
+fn unit_vector(lat: f64, lon: f64) -> [f64; 3] {
+    let (lat, lon) = (lat.to_radians(), lon.to_radians());
+    [lon.cos() * lat.cos(), lon.sin() * lat.cos(), lat.sin()]
+}
+
+/// Unit vector -> `(lat, lon)` in degrees, longitude in `[-180, 180]`.
+fn from_unit_vector([x, y, z]: [f64; 3]) -> (f64, f64) {
+    let lat = z.clamp(-1.0, 1.0).asin().to_degrees();
+    let lon = normalize_longitude(y.atan2(x).to_degrees());
+    (lat, lon)
 }
 
 /// Lambert Conformal Conic projection grid
@@ -794,5 +855,101 @@ mod tests {
         assert_eq!(grid.dimensions(), (720, 361));
         assert_eq!(grid.num_points(), 720 * 361);
         assert_eq!(grid.type_name(), "Regular Lat/Lon");
+    }
+
+    /// ECCC's HRDPS rotation.
+    const HRDPS_POLE: (f64, f64) = (-36.0885, 245.305);
+
+    fn rotated_grid(lat_south_pole: f64, lon_south_pole: f64, angle: f64) -> RotatedLatLonGrid {
+        RotatedLatLonGrid {
+            base: LatLonGrid {
+                ni: 50,
+                nj: 40,
+                la1: -12.3,
+                lo1: -15.7,
+                la2: 11.49,
+                lo2: 20.07,
+                di: 0.73,
+                dj: 0.61,
+                scan_mode: ScanMode {
+                    i_positive: true,
+                    j_positive: true,
+                    consecutive_i: true,
+                },
+            },
+            lat_south_pole,
+            lon_south_pole,
+            angle,
+        }
+    }
+
+    fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-9 && (actual.1 - expected.1).abs() < 1e-9,
+            "{actual:?} != {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_rotated_frame_is_centred_opposite_its_south_pole() {
+        let (lat_sp, lon_sp) = HRDPS_POLE;
+        let rotation = PoleRotation::new(lat_sp, lon_sp, 0.0);
+        // The rotated origin sits 90 degrees north of the south pole, on its meridian.
+        assert_close(
+            rotation.to_geographic(0.0, 0.0),
+            (lat_sp + 90.0, lon_sp - 360.0),
+        );
+        assert_close(rotation.to_rotated(lat_sp + 90.0, lon_sp), (0.0, 0.0));
+        // The given south pole is the rotated frame's.
+        assert!((rotation.to_rotated(lat_sp, lon_sp).0 + 90.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_unrotated_pole_is_the_identity() {
+        let rotation = PoleRotation::new(-90.0, 0.0, 0.0);
+        for &(lat, lon) in &[(0.0, 0.0), (45.0, 100.0), (-60.0, -170.0)] {
+            assert_close(rotation.to_rotated(lat, lon), (lat, lon));
+            assert_close(rotation.to_geographic(lat, lon), (lat, lon));
+        }
+    }
+
+    #[test]
+    fn test_rotation_round_trips() {
+        for &(lat_sp, lon_sp, angle) in &[
+            (HRDPS_POLE.0, HRDPS_POLE.1, 0.0),
+            (-40.0, 10.0, 0.0),
+            (-50.0, -20.0, 15.0),
+        ] {
+            let rotation = PoleRotation::new(lat_sp, lon_sp, angle);
+            for lat in (-80..=80).step_by(20) {
+                for lon in (-170..=170).step_by(20) {
+                    let (lat, lon) = (f64::from(lat), f64::from(lon));
+                    let (rlat, rlon) = rotation.to_rotated(lat, lon);
+                    // At the rotated poles longitude is undefined, and asin
+                    // near +-1 keeps only about 1e-6 degrees of latitude.
+                    if rlat.abs() > 89.0 {
+                        continue;
+                    }
+                    assert_close(rotation.to_geographic(rlat, rlon), (lat, lon));
+                    let (glat, glon) = rotation.to_geographic(lat, lon);
+                    assert_close(rotation.to_rotated(glat, glon), (lat, lon));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rotated_coordinates_inverts_coordinates() {
+        for &(lat_sp, lon_sp, angle) in &[(HRDPS_POLE.0, HRDPS_POLE.1, 0.0), (-50.0, -20.0, 15.0)] {
+            let grid = rotated_grid(lat_sp, lon_sp, angle);
+            for (i, j) in [(0, 0), (49, 0), (0, 39), (49, 39), (17, 23)] {
+                let (lat, lon) = grid.coordinates(i, j).expect("coordinates failed");
+                let rotated = grid
+                    .base
+                    .coordinates(i, j)
+                    .expect("base coordinates failed");
+                assert_close(grid.rotated_coordinates(lat, lon), rotated);
+            }
+        }
     }
 }

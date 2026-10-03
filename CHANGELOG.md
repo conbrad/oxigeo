@@ -5,6 +5,11 @@ All notable changes to OxiGeo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `oxigeo-grib`: rotated lat/lon grids (GDT 3.1) now convert in both directions. `grid::PoleRotation` holds a grid's rotation, computed once from the rotated south pole and the angle of rotation, with `to_geographic(rlat, rlon)` and its inverse `to_rotated(lat, lon)`; `RotatedLatLonGrid::rotation()` returns it, and `RotatedLatLonGrid::rotated_coordinates(lat, lon)` finds a geographic point's rotated latitude and longitude, for locating it on the grid. `RotatedLatLonGrid::coordinates` now uses `PoleRotation` and returns bit-identical results.
+
 ## [0.2.4] - 2026-08-18
 
 ### Added
